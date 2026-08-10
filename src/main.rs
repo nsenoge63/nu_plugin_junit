@@ -20,6 +20,25 @@ use xlsx_report::{write_report, ReportMeta};
 
 struct JunitPlugin;
 
+/// Résout `raw` en chemin absolu, relatif au *vrai* répertoire courant de la
+/// session nushell (`$env.PWD`) — et non au répertoire courant du process du
+/// plugin, qui tourne en arrière-plan et ne suit pas les `cd` de la session.
+/// Un plugin nushell est un process séparé, persistant entre les appels : il
+/// ne faut jamais utiliser directement un chemin relatif fourni en argument
+/// sans le résoudre via `EngineInterface::get_current_dir()`, sous peine
+/// d'écrire/lire silencieusement au mauvais endroit.
+fn resolve_path(engine: &EngineInterface, raw: &str, span: Span) -> Result<PathBuf, LabeledError> {
+    let p = PathBuf::from(raw);
+    if p.is_absolute() {
+        return Ok(p);
+    }
+    let cwd = engine.get_current_dir().map_err(|e| {
+        LabeledError::new(format!("Impossible d'obtenir le répertoire courant : {e}"))
+            .with_label("erreur interne", span)
+    })?;
+    Ok(PathBuf::from(cwd).join(p))
+}
+
 impl Plugin for JunitPlugin {
     fn version(&self) -> String {
         env!("CARGO_PKG_VERSION").into()
@@ -61,18 +80,21 @@ impl SimplePluginCommand for JunitReport {
     fn run(
         &self,
         _plugin: &JunitPlugin,
-        _engine: &EngineInterface,
+        engine: &EngineInterface,
         call: &EvaluatedCall,
         _input: &Value,
     ) -> Result<Value, LabeledError> {
         let span = call.head;
         let dir: Option<String> = call.opt(0)?;
         let dir = dir.unwrap_or_else(|| "target/surefire-reports".to_string());
-        let dir_path = PathBuf::from(&dir);
+        let dir_path = resolve_path(engine, &dir, span)?;
 
         if !dir_path.is_dir() {
-            return Err(LabeledError::new(format!("Répertoire introuvable : {dir}"))
-                .with_label("chemin invalide", span));
+            return Err(LabeledError::new(format!(
+                "Répertoire introuvable : {}",
+                dir_path.display()
+            ))
+            .with_label("chemin invalide", span));
         }
 
         let cases = parse_reports_dir(&dir_path).map_err(|e| {
@@ -134,19 +156,20 @@ impl SimplePluginCommand for JunitToXlsx {
                 "Branche git (affichée en pied de page)",
                 None,
             )
-            .input_output_type(Type::table(), Type::Nothing)
+            .input_output_type(Type::table(), Type::String)
             .category(Category::Formats)
     }
 
     fn run(
         &self,
         _plugin: &JunitPlugin,
-        _engine: &EngineInterface,
+        engine: &EngineInterface,
         call: &EvaluatedCall,
         input: &Value,
     ) -> Result<Value, LabeledError> {
         let span = call.head;
-        let path: String = call.req(0)?;
+        let raw_path: String = call.req(0)?;
+        let out_path = resolve_path(engine, &raw_path, span)?;
         let project_name: Option<String> = call.get_flag("project")?;
         let branch: Option<String> = call.get_flag("branch")?;
 
@@ -165,12 +188,16 @@ impl SimplePluginCommand for JunitToXlsx {
             generator_version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
-        write_report(&path, &cases, &meta).map_err(|e| {
+        let out_path_str = out_path.to_string_lossy().into_owned();
+        write_report(&out_path_str, &cases, &meta).map_err(|e| {
             LabeledError::new(format!("Erreur lors de l'écriture du fichier xlsx : {e}"))
                 .with_label("erreur d'écriture", span)
         })?;
 
-        Ok(Value::nothing(span))
+        Ok(Value::string(
+            format!("Rapport écrit : {}", out_path.display()),
+            span,
+        ))
     }
 }
 

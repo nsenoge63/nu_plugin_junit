@@ -48,6 +48,28 @@ junit report ./target/surefire-reports
 
 ## Build
 
+**Important : la version de nu-plugin/nu-protocol doit correspondre exactement à ta version de nushell.** Le protocole de plugin nushell refuse de charger un plugin compilé contre une autre version — pas de compatibilité ascendante/descendante. Avant de builder, vérifie ta version :
+
+```nu
+version | get version
+```
+
+Puis dans `Cargo.toml`, aligne `nu-plugin`, `nu-protocol` et
+`nu-plugin-test-support` (dev-dependency) sur exactement cette version
+(les trois doivent rester synchronisées entre elles). Au moment de la
+rédaction, ce projet cible **nushell 0.114.1** — si ta version diffère :
+
+```bash
+cargo add nu-plugin@<ta_version> --no-default-features
+cargo add nu-protocol@<ta_version>
+cargo add nu-plugin-test-support@<ta_version> --dev
+```
+
+(`--no-default-features` reproduit le `default-features = false` déjà en
+place sur `nu-plugin` dans le `Cargo.toml` fourni — voir plus bas
+pourquoi.) Si nushell se met à jour plus tard (ce qui arrive souvent),
+il faudra refaire cette opération et recompiler.
+
 ```bash
 cargo build --release
 # binaire : target/release/nu_plugin_junit
@@ -61,21 +83,48 @@ rapide mais nécessitant un compilateur C, n'est pas activée ici). `roxmltree`
 est également du Rust pur. Ça simplifie le cross-compilation (cf. section
 "Publier une release" plus bas) : pas de toolchain C à installer par cible.
 
-Par ailleurs, `nu-plugin-core 0.108.0` déclare une dépendance
-souple sur `interprocess >= 2.2.0`, mais les versions `interprocess` plus
-récentes que 2.2.0 ont cassé une API qu'il utilise. **Le `Cargo.lock` fourni
-épingle déjà `interprocess = 2.2.0`**, donc un simple `cargo build` sans y
-toucher fonctionne. Si tu mets à jour les dépendances (`cargo update`) et
-que ça recasse, refais :
+### Windows : si un conflit de versions `windows-sys` réapparaît
+
+Rencontré une fois pendant le développement (sur `nu-plugin`/`nu-protocol`
+0.108.0, avant le passage à 0.114.1 — **non reproduit sur la version
+actuellement ciblée**, ce paragraphe est gardé à titre de référence si ça
+revient après un futur changement de version) : `cargo build` peut échouer
+avec une erreur `E0308` du type *"there are multiple different versions of
+crate `windows_sys`"*, typiquement dans le code de `nu-protocol`
+(`eval_const.rs`, appel à `dirs_sys::known_folder`). C'est un déséquilibre
+entre la version de `windows-sys` que `nu-protocol` utilise directement et
+celle que ses dépendances transitives (`dirs-sys`, via `dirs`/`nu-path`)
+résolvent de leur côté — invisible sous Linux/macOS car ce code est
+derrière `#[cfg(windows)]`.
+
+Diagnostic :
 
 ```bash
-cargo update -p interprocess --precise 2.2.0
+# Lister les versions en conflit :
+cargo tree --target x86_64-pc-windows-msvc -i windows-sys
+# Voir qui dépend de laquelle :
+cargo tree --target x86_64-pc-windows-msvc -i windows-sys@<version>
 ```
 
-Ou, plus simple, ignore complètement le souci en gardant
-`default-features = false` sur `nu-plugin` dans `Cargo.toml` (ce qui est
-déjà fait) : ça désactive la feature `local-socket` qui tire `interprocess`,
-et le plugin communique en stdio classique — largement suffisant ici.
+Correctif (aligner l'ancienne version sur la plus récente, si les
+contraintes de version des autres dépendants le permettent) :
+
+```bash
+cargo update -p windows-sys@<ancienne_version> --precise <version_cible>
+```
+
+Ces commandes n'ont pas besoin de compiler quoi que ce soit (résolution de
+dépendances uniquement), donc utilisables même sans le bon rustc installé.
+
+Par ailleurs (rencontré sur 0.108.0, **absent du graphe de dépendances en
+0.114.1** — `interprocess` n'y apparaît plus du tout, voir `cargo tree -i
+interprocess`) : certaines versions de `nu-plugin-core` déclarent une
+dépendance souple sur `interprocess`, dont des versions récentes ont cassé
+une API qu'elles utilisent. `default-features = false` sur `nu-plugin`
+dans `Cargo.toml` (déjà en place) évite complètement le problème en toutes
+circonstances : ça désactive la feature `local-socket` qui tire
+`interprocess`, et le plugin communique en stdio classique — largement
+suffisant ici.
 
 ## Installation dans nushell
 
@@ -104,6 +153,31 @@ tester un plugin nushell. Trois tests fournis :
   fichier `.xlsx` produit (archive OOXML valide, cellules et fusions
   correctes — vérifié manuellement avec `openpyxl` pendant le
   développement).
+
+## Chemins relatifs
+
+`junit report <dir>` et `junit to-xlsx <path>` acceptent des chemins
+relatifs — ils sont résolus par rapport au répertoire courant **de ta
+session nushell** (`$env.PWD`), pas par rapport à un quelconque répertoire
+du process du plugin. C'est important : un plugin nushell tourne comme
+process séparé, démarré une fois et réutilisé pour tous les appels
+suivants — il ne "suit" pas tes `cd` comme le ferait une commande externe
+relancée à chaque fois. Sans résolution explicite via
+`EngineInterface::get_current_dir()`, un chemin relatif se serait résolu
+contre le répertoire de travail du process du plugin (potentiellement le
+dossier où nushell a été lancé, ou tout autre chose), pas contre ton
+dossier courant affiché dans le prompt — ce qui peut donner l'impression
+qu'un fichier "n'a pas été généré" alors qu'il a juste été écrit ailleurs,
+silencieusement.
+
+`junit to-xlsx` retourne d'ailleurs désormais le chemin absolu réellement
+écrit (au lieu de ne rien retourner), justement pour éviter ce genre de
+confusion :
+
+```nu
+junit report | junit to-xlsx ./rapport.xlsx
+# => Rapport écrit : /home/toi/mon-projet/rapport.xlsx
+```
 
 ## Différences avec la version Java d'origine
 

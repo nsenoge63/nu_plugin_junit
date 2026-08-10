@@ -9,16 +9,11 @@ license = "MIT"
 # default-features = false désactive la feature "local-socket" (dépend
 # d'`interprocess`) : le plugin communique en stdio classique, ce qui suffit
 # largement ici et évite un conflit de versions transitif avec interprocess.
-nu-plugin = { version = "0.108.0", default-features = false }
-nu-protocol = "0.108.0"
+nu-plugin = { version = "0.114.1", default-features = false }
+nu-protocol = "0.114.1"
 roxmltree = "0.21.1"
 rust_xlsxwriter = "0.97.1"
 
 [dev-dependencies]
-nu-plugin-test-support = "0.108.0"
-
-# NOTE : pin nécessaire au moment de la rédaction (voir README, section
-# "Notes de compilation") pour contourner une incompatibilité entre
-# nu-plugin-core 0.108.0 et les versions récentes d'interprocess :
-#   cargo update -p interprocess --precise 2.2.0
+nu-plugin-test-support = "0.114.1"
 
