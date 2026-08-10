@@ -1,0 +1,92 @@
+name: Release
+
+# Déclenché sur un tag "vX.Y.Z" (ex: v0.1.0), ou manuellement pour tester
+# le build sans publier de release.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer la toolchain Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # aarch64-linux : pas de runner GitHub natif, on cross-compile.
+      # Les dépendances du projet (roxmltree, rust_xlsxwriter en config par
+      # défaut) sont du Rust pur sans lib C système, donc `cross` suffit
+      # sans configuration supplémentaire.
+      - name: Installer `cross` (aarch64-linux uniquement)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --locked
+
+      - name: Build (natif)
+        if: "!matrix.cross"
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Empaqueter (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf "$GITHUB_WORKSPACE/nu_plugin_junit-${{ matrix.target }}.tar.gz" nu_plugin_junit
+
+      - name: Empaqueter (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a "$GITHUB_WORKSPACE/nu_plugin_junit-${{ matrix.target }}.zip" nu_plugin_junit.exe
+
+      - name: Upload artefact de build
+        uses: actions/upload-artifact@v4
+        with:
+          name: nu_plugin_junit-${{ matrix.target }}
+          path: nu_plugin_junit-${{ matrix.target }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Récupérer tous les artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publier la release GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
