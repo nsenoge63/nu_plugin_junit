@@ -267,19 +267,19 @@ mod tests {
     use std::sync::Arc;
 
     const SAMPLE_SUITE_OK: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="cnaf.ocda.SampleOkTest" tests="2" failures="0" errors="0" skipped="0" time="1.234">
-  <testcase name="shouldDoSomething" classname="cnaf.ocda.SampleOkTest" time="0.5"/>
-  <testcase name="shouldDoSomethingElse" classname="cnaf.ocda.SampleOkTest" time="0.734"/>
+<testsuite name="org.outil.SampleOkTest" tests="2" failures="0" errors="0" skipped="0" time="1.234">
+  <testcase name="shouldDoSomething" classname="org.outil.SampleOkTest" time="0.5"/>
+  <testcase name="shouldDoSomethingElse" classname="org.outil.SampleOkTest" time="0.734"/>
 </testsuite>
 "#;
 
     const SAMPLE_SUITE_MIXED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="cnaf.ocda.SampleMixedTest" tests="3" failures="1" errors="0" skipped="1" time="3.5">
-  <testcase name="passes" classname="cnaf.ocda.SampleMixedTest" time="1.5"/>
-  <testcase name="fails" classname="cnaf.ocda.SampleMixedTest" time="1.0">
+<testsuite name="org.outil.SampleMixedTest" tests="3" failures="1" errors="0" skipped="1" time="3.5">
+  <testcase name="passes" classname="org.outil.SampleMixedTest" time="1.5"/>
+  <testcase name="fails" classname="org.outil.SampleMixedTest" time="1.0">
     <failure message="boom">stack trace...</failure>
   </testcase>
-  <testcase name="isSkipped" classname="cnaf.ocda.SampleMixedTest" time="0.0">
+  <testcase name="isSkipped" classname="org.outil.SampleMixedTest" time="0.0">
     <skipped/>
   </testcase>
 </testsuite>

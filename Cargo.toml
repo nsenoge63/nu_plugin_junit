@@ -1,6 +1,6 @@
 [package]
 name = "nu_plugin_junit"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Plugin nushell natif : parse des rapports JUnit/surefire et génère un rapport Excel stylé"
 license = "MIT"
