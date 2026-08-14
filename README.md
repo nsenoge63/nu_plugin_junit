@@ -2,20 +2,24 @@
 
 Plugin **nushell natif** (protocole `nu_plugin_*`, écrit en Rust) qui parse
 des rapports JUnit/surefire et produit un rapport Excel stylé — directement
-dans le pipeline nushell, sans JVM, sans jar, sans fichier intermédiaire.
-
-Port du projet Java d'origine (`JunitReportGeneratorMain` / `XmlParser` /
-`ExcelGenerator`), avec un vrai changement de paradigme : plutôt que
-"générer un fichier", le plugin retourne d'abord une **table structurée**
-que tu peux filtrer/trier/agréger avec les commandes nushell natives avant
-de l'exporter.
+dans dans le terminal `nushell`.
 
 ## Commandes
 
 ### `junit report [path]`
 
 Parse tous les `*.xml` d'un répertoire de rapports surefire et retourne une
-table `{ suite, test, status, time }` (`time` en secondes).
+table `{ suite, test, status, time }` (`time` en secondes). L'attribut
+`name` du `<testsuite>` peut suivre deux conventions différentes selon le
+générateur du rapport, détectées automatiquement (présence d'un `/` ou `\`
+dans `name`) :
+
+- **Style Java classique** — `name` est un nom pleinement qualifié à points
+  (ex: `org.tool.SomeTest`) : `suite` = dernier segment (`SomeTest`).
+- **Style "fichier de test"** (Jest, Mocha, pytest, et d'autres générateurs
+  non-Java) — `name` est directement un chemin de fichier (ex:
+  `tests\integration\montest.test.js`) : `suite` = nom de fichier complet sans 
+  extension (`montest.test`).
 
 ```nu
 junit report ./target/surefire-reports
@@ -38,8 +42,9 @@ junit report | to json | save resultats.json
 
 Consomme une table (typiquement la sortie de `junit report`, éventuellement
 filtrée/triée avant) et écrit un rapport Excel `.xlsx` stylé : classes de
-test fusionnées, statuts colorés, formules `COUNTIF` pour les totaux, durée
-totale, pied de page projet/branche.
+test fusionnées (colonne "Classe de test" = `suite`), statuts colorés,
+formules `COUNTIF` pour les totaux, durée totale, pied de page
+projet/branche.
 
 ```nu
 junit report ./target/surefire-reports
@@ -75,57 +80,6 @@ cargo build --release
 # binaire : target/release/nu_plugin_junit
 ```
 
-### Note de compilation
-
-Aucune dépendance C système : `rust_xlsxwriter` utilise par défaut une
-implémentation deflate 100% Rust (la feature optionnelle `zlib`, plus
-rapide mais nécessitant un compilateur C, n'est pas activée ici). `roxmltree`
-est également du Rust pur. Ça simplifie le cross-compilation (cf. section
-"Publier une release" plus bas) : pas de toolchain C à installer par cible.
-
-### Windows : si un conflit de versions `windows-sys` réapparaît
-
-Rencontré une fois pendant le développement (sur `nu-plugin`/`nu-protocol`
-0.108.0, avant le passage à 0.114.1 — **non reproduit sur la version
-actuellement ciblée**, ce paragraphe est gardé à titre de référence si ça
-revient après un futur changement de version) : `cargo build` peut échouer
-avec une erreur `E0308` du type *"there are multiple different versions of
-crate `windows_sys`"*, typiquement dans le code de `nu-protocol`
-(`eval_const.rs`, appel à `dirs_sys::known_folder`). C'est un déséquilibre
-entre la version de `windows-sys` que `nu-protocol` utilise directement et
-celle que ses dépendances transitives (`dirs-sys`, via `dirs`/`nu-path`)
-résolvent de leur côté — invisible sous Linux/macOS car ce code est
-derrière `#[cfg(windows)]`.
-
-Diagnostic :
-
-```bash
-# Lister les versions en conflit :
-cargo tree --target x86_64-pc-windows-msvc -i windows-sys
-# Voir qui dépend de laquelle :
-cargo tree --target x86_64-pc-windows-msvc -i windows-sys@<version>
-```
-
-Correctif (aligner l'ancienne version sur la plus récente, si les
-contraintes de version des autres dépendants le permettent) :
-
-```bash
-cargo update -p windows-sys@<ancienne_version> --precise <version_cible>
-```
-
-Ces commandes n'ont pas besoin de compiler quoi que ce soit (résolution de
-dépendances uniquement), donc utilisables même sans le bon rustc installé.
-
-Par ailleurs (rencontré sur 0.108.0, **absent du graphe de dépendances en
-0.114.1** — `interprocess` n'y apparaît plus du tout, voir `cargo tree -i
-interprocess`) : certaines versions de `nu-plugin-core` déclarent une
-dépendance souple sur `interprocess`, dont des versions récentes ont cassé
-une API qu'elles utilisent. `default-features = false` sur `nu-plugin`
-dans `Cargo.toml` (déjà en place) évite complètement le problème en toutes
-circonstances : ça désactive la feature `local-socket` qui tire
-`interprocess`, et le plugin communique en stdio classique — largement
-suffisant ici.
-
 ## Installation dans nushell
 
 ```nu
@@ -154,58 +108,11 @@ tester un plugin nushell. Trois tests fournis :
   correctes — vérifié manuellement avec `openpyxl` pendant le
   développement).
 
-## Chemins relatifs
-
-`junit report <dir>` et `junit to-xlsx <path>` acceptent des chemins
-relatifs — ils sont résolus par rapport au répertoire courant **de ta
-session nushell** (`$env.PWD`), pas par rapport à un quelconque répertoire
-du process du plugin. C'est important : un plugin nushell tourne comme
-process séparé, démarré une fois et réutilisé pour tous les appels
-suivants — il ne "suit" pas tes `cd` comme le ferait une commande externe
-relancée à chaque fois. Sans résolution explicite via
-`EngineInterface::get_current_dir()`, un chemin relatif se serait résolu
-contre le répertoire de travail du process du plugin (potentiellement le
-dossier où nushell a été lancé, ou tout autre chose), pas contre ton
-dossier courant affiché dans le prompt — ce qui peut donner l'impression
-qu'un fichier "n'a pas été généré" alors qu'il a juste été écrit ailleurs,
-silencieusement.
-
-`junit to-xlsx` retourne d'ailleurs désormais le chemin absolu réellement
-écrit (au lieu de ne rien retourner), justement pour éviter ce genre de
-confusion :
-
-```nu
-junit report | junit to-xlsx ./rapport.xlsx
-# => Rapport écrit : /home/toi/mon-projet/rapport.xlsx
-```
-
-## Différences avec la version Java d'origine
-
-- **Format `.xlsx` (OOXML)** au lieu de `.xls` (binaire HSSF). C'est un
-  changement volontaire : les bibliothèques Rust matures pour Excel ciblent
-  l'OOXML, et `.xlsx` est de toute façon le format natif d'Excel depuis
-  2007.
-- **Pas d'ouverture automatique du fichier** (`Desktop.open()` côté Java) :
-  ça n'a pas de sens dans un pipeline nushell — utilise `open ./rapport.xlsx`
-  toi-même si tu veux l'ouvrir.
-- **Couleurs approximées** : les couleurs indexées HSSF d'origine
-  (`IndexedColors.BRIGHT_GREEN1`, etc.) sont approximées en RGB, pas
-  identiques au pixel près.
-- Le nom du projet et la branche git ne sont plus déduits automatiquement
-  d'un `.git/HEAD` (le plugin n'a pas connaissance d'un "répertoire de
-  projet" comme le faisait le CLI Java) : passe-les explicitement avec
-  `--project` / `--branch` si tu veux les voir dans le pied de page. Pour
-  les récupérer automatiquement dans un script nushell :
-
-  ```nu
-  junit report
-    | junit to-xlsx ./rapport.xlsx --project (basename (pwd)) --branch (git branch --show-current)
-  ```
 
 ## Publier une release (build multi-plateformes)
 
 Le workflow fourni dans `.github/workflows/release.yml` construit le
-plugin pour 5 cibles (Linux x86_64/aarch64, macOS Intel/Apple Silicon,
+plugin pour 4 cibles (Linux x86_64/aarch64, macOS Intel/Apple Silicon,
 Windows x86_64) et publie chaque binaire en asset d'une release GitHub dès
 qu'un tag `vX.Y.Z` est poussé :
 
@@ -226,19 +133,19 @@ plateforme. Comme le projet n'a aucune dépendance C système (voir la note
 de compilation plus haut), le cross-build ne demande aucune configuration
 supplémentaire.
 
-## Intégration mise
+## Intégration dans mise
 
 ```toml
 [tools]
-"github:VOTRE_ORG/nu_plugin_junit" = "latest"
+"github:nsenoge63/nu_plugin_junit" = "<version-plugin>"
 ```
 
 ```bash
-mise use "github:VOTRE_ORG/nu_plugin_junit@latest"
+mise use "github:nsenoge63/nu_plugin_junit@<version-plugin>"
 ```
 
 mise télécharge et installe le bon binaire pour la plateforme courante et
-l'expose sur le PATH. Il reste ensuite une seule étape, à faire une fois,
+l'expose sur le `PATH`. Il reste ensuite une seule étape, à faire une fois,
 **dans nushell** (mise ne peut pas le faire à ta place : c'est nushell qui
 gère la liste de ses plugins enregistrés, indépendamment de mise) :
 

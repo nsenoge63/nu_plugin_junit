@@ -38,13 +38,13 @@ pub fn write_report(
     let white_fmt = Format::new()
         .set_background_color(Color::White)
         .set_border(FormatBorder::Thin)
-        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::Left)
         .set_align(FormatAlign::VerticalCenter);
 
     let grey_fmt = Format::new()
         .set_background_color(Color::RGB(0xE0E0E0))
         .set_border(FormatBorder::Thin)
-        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::Left)
         .set_align(FormatAlign::VerticalCenter);
 
     let status_fmt = |status: TestStatus| {
