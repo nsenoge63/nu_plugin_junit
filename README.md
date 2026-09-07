@@ -10,16 +10,37 @@ dans dans le terminal `nushell`.
 
 Parse tous les `*.xml` d'un répertoire de rapports surefire et retourne une
 table `{ suite, test, status, time }` (`time` en secondes). L'attribut
-`name` du `<testsuite>` peut suivre deux conventions différentes selon le
-générateur du rapport, détectées automatiquement (présence d'un `/` ou `\`
-dans `name`) :
+`name` du `<testsuite>` (complété par `classname` du `<testcase>` pour le
+troisième cas) peut suivre plusieurs conventions selon le générateur du
+rapport, détectées automatiquement :
 
-- **Style Java classique** — `name` est un nom pleinement qualifié à points
-  (ex: `org.tool.SomeTest`) : `suite` = dernier segment (`SomeTest`).
+- **Style Java classique** (Maven/Surefire) — `name` est un nom pleinement
+  qualifié à points (ex: `org.outil.SomeTest`) : `suite` = dernier segment
+  (`SomeTest`).
 - **Style "fichier de test"** (Jest, Mocha, pytest, et d'autres générateurs
   non-Java) — `name` est directement un chemin de fichier (ex:
-  `tests\integration\montest.test.js`) : `suite` = nom de fichier complet sans 
-  extension (`montest.test`).
+  `tests\integration\mon_test.test.js`, détecté par la présence d'un `/` ou `\`) :
+  `suite` = nom de fichier complet, extension incluse (`mon_test.test.js`).
+- **Style Karma/Jasmine** (Angular + `karma-junit-reporter`, config par
+  défaut) — `name` est l'identifiant du navigateur (ex: `Chrome Headless
+  152.0.0.0 (Windows 10)`), identique pour tous les tests du run donc
+  inutilisable tel quel. Le vrai regroupement (bloc `describe` Jasmine) est
+  reconstruit depuis l'attribut `classname` de chaque `<testcase>`, qui le
+  préfixe par ce même nom de navigateur "assaini" (espaces et points
+  remplacés par `_`) — comportement par défaut de `karma-junit-reporter`,
+  non configurable côté Karma (l'attribut `name` du `<testsuite>` y est
+  câblé en dur sur le nom du navigateur, sans option pour le changer).
+  `suite` = bloc `describe` (ex: `TypologyTableItemComponent`).
+
+(Une colonne `file` séparée existait dans une version précédente, mais
+faisait doublon avec `suite` dans la quasi-totalité des cas réels — elle a
+été retirée, `suite` porte maintenant directement l'info la plus utile
+selon le format du rapport.)
+
+Les rapports où plusieurs `<testsuite>` sont regroupés sous un `<testsuites>`
+englobant (courant avec Jest/jest-junit et d'autres générateurs non-Java)
+sont gérés correctement : chaque `<testsuite>` est traité individuellement,
+jamais le nom du `<testsuites>` englobant.
 
 ```nu
 junit report ./target/surefire-reports
@@ -38,7 +59,7 @@ junit report | to csv | save resultats.csv
 junit report | to json | save resultats.json
 ```
 
-### `junit to-xlsx <path> [--project <nom>] [--branch <branche>]`
+### `junit to-xlsx <path> [--project <nom>] [--branch <branche>] [--open]`
 
 Consomme une table (typiquement la sortie de `junit report`, éventuellement
 filtrée/triée avant) et écrit un rapport Excel `.xlsx` stylé : classes de
@@ -46,9 +67,18 @@ test fusionnées (colonne "Classe de test" = `suite`), statuts colorés,
 formules `COUNTIF` pour les totaux, durée totale, pied de page
 projet/branche.
 
+`--open` (ou `-o`) ouvre le fichier généré avec l'application par défaut
+associée aux `.xlsx` (Excel, LibreOffice Calc...), via `start` sous Windows,
+`open` sous macOS, `xdg-open` sous Linux. C'est **opt-in** (jamais par
+défaut — gênant en CI/scripté) et **non bloquant** : si l'ouverture échoue
+(pas d'appli associée, environnement headless...), la commande n'échoue pas
+pour autant — le fichier a bien été généré, c'est signalé dans le message
+retourné :
+
 ```nu
 junit report ./target/surefire-reports
-  | junit to-xlsx ./rapport.xlsx --project mon-projet --branch main
+  | junit to-xlsx ./rapport.xlsx --project mon-projet --branch main --open
+# => Rapport écrit : /chemin/absolu/vers/rapport.xlsx
 ```
 
 ## Build
@@ -145,7 +175,7 @@ mise use "github:nsenoge63/nu_plugin_junit@<version-plugin>"
 ```
 
 mise télécharge et installe le bon binaire pour la plateforme courante et
-l'expose sur le `PATH`. Il reste ensuite une seule étape, à faire une fois,
+l'expose sur le PATH. Il reste ensuite une seule étape, à faire une fois,
 **dans nushell** (mise ne peut pas le faire à ta place : c'est nushell qui
 gère la liste de ses plugins enregistrés, indépendamment de mise) :
 
