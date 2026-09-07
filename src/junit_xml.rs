@@ -38,7 +38,7 @@ pub struct TestCase {
     /// format Java classique (FQCN à points, ex: "org.outil.SomeTest"),
     /// c'est le dernier segment ("SomeTest"). Pour un `<testsuite>` dont le
     /// `name` est directement un chemin de fichier (Jest, Mocha, pytest...),
-    /// c'est le nom de fichier complet, extension incluse (ex: "montest.test.js").
+    /// c'est le nom de fichier complet, extension incluse (ex: "mon_test.test.js").
     pub suite: String,
     pub name: String,
     pub status: TestStatus,
@@ -72,24 +72,51 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// Dérive le libellé de suite à afficher à partir de l'attribut `name` du
-/// `<testsuite>`.
+/// `<testsuite>` et, si disponible, de l'attribut `classname` du
+/// `<testcase>` courant.
 ///
-/// Deux conventions coexistent dans l'écosystème JUnit XML :
-/// - Style Java classique : `name` est un nom pleinement qualifié à points
-///   (ex: "org.outil.SomeTest") -> on garde le dernier segment.
-/// - Style "fichier de test" (Jest, Mocha, pytest, etc.) : `name` est
+/// Trois conventions coexistent dans l'écosystème JUnit XML :
+///
+/// - **Style Java classique** (Maven/Surefire) : `name` est un nom
+///   pleinement qualifié à points (ex: "org.outil.SomeTest") -> on garde le
+///   dernier segment.
+/// - **Style "fichier de test"** (Jest, Mocha, pytest, etc.) : `name` est
 ///   directement un chemin de fichier (ex:
-///   "tests\integration\custom-queries\montest.test.js") -> le libellé devient
-///   le nom de fichier complet, sans extension incluse ("montest.test").
-fn derive_suite(full_name: &str) -> String {
+///   "tests\integration\custom-queries\mon_test.test.js") -> le libellé devient
+///   le nom de fichier complet, extension incluse ("mon_test.test.js").
+/// - **Style Karma/Jasmine** (`karma-junit-reporter`) : `name` est
+///   l'identifiant du navigateur (ex: "Chrome Headless 152.0.0.0 (Windows
+///   10)"), le même pour TOUS les tests du run — inutilisable tel quel comme
+///   suite. Le vrai regroupement (describe Jasmine) se trouve dans
+///   `classname` du `<testcase>`, préfixé par ce même nom de navigateur
+///   "assaini" (espaces ET points remplacés par `_`) suivi d'un point
+///   littéral — comportement du formatteur par défaut de
+///   `karma-junit-reporter` (fonction `getClassName`, non configurable côté
+///   Karma). Comme ce préfixe assaini ne contient jamais de point, "le
+///   premier point de `classname`" tombe toujours exactement à la frontière
+///   entre préfixe et vrai describe, quel que soit le contenu de ce dernier.
+///   Ce test de préfixe est ce qui permet de ne PAS perturber les deux
+///   autres styles : un FQCN Java classique ne commence jamais par sa propre
+///   version "assainie" suivie d'un point littéral.
+fn derive_suite(full_name: &str, classname: Option<&str>) -> String {
     if full_name.contains('/') || full_name.contains('\\') {
-        Path::new(basename(full_name))
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(full_name).to_string()
-    } else {
-        full_name.rsplit('.').next().unwrap_or(full_name).to_string()
+        return basename(full_name).to_string();
     }
+
+    if let Some(cn) = classname {
+        let sanitized: String = full_name
+            .chars()
+            .map(|c| if c == ' ' || c == '.' { '_' } else { c })
+            .collect();
+        let needle = format!("{sanitized}.");
+        if let Some(rest) = cn.strip_prefix(needle.as_str()) {
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+        }
+    }
+
+    full_name.rsplit('.').next().unwrap_or(full_name).to_string()
 }
 
 /// Parcourt un répertoire et parse tous les fichiers *.xml qu'il contient
@@ -120,13 +147,18 @@ pub fn parse_reports_dir(dir: &Path) -> Result<Vec<TestCase>, ParseError> {
         // <testsuites> englobant, qui n'a pas ce tag.
         for suite_node in doc.descendants().filter(|n| n.has_tag_name("testsuite")) {
             let full_name = suite_node.attribute("name").unwrap_or_default();
-            let suite = derive_suite(full_name);
 
             // Enfants directs seulement : un <testcase> imbriqué dans une
             // sous-suite (rare, non-standard) sera traité par l'itération de
             // CETTE sous-suite, pas comptabilisé ici en double.
             for node in suite_node.children().filter(|n| n.has_tag_name("testcase")) {
                 let name = node.attribute("name").unwrap_or_default().to_string();
+
+                // Calculé PAR TESTCASE (pas une fois pour tout le
+                // <testsuite>) : sous Karma, `classname` diffère d'un test à
+                // l'autre au sein d'un même <testsuite> (un par navigateur,
+                // pas par describe/composant).
+                let suite = derive_suite(full_name, node.attribute("classname"));
 
                 let time_attr = node.attribute("time").unwrap_or("0").replace(',', "");
                 let time: f32 = time_attr.parse().unwrap_or(0.0);
@@ -141,7 +173,7 @@ pub fn parse_reports_dir(dir: &Path) -> Result<Vec<TestCase>, ParseError> {
                 }
 
                 cases.push(TestCase {
-                    suite: suite.clone(),
+                    suite,
                     name,
                     status,
                     time,
@@ -185,12 +217,12 @@ mod tests {
         // Le libellé de suite est le nom de fichier complet, tel quel.
         let tmp = std::env::temp_dir().join(format!("nu_plugin_junit_xml_test_{}_b", std::process::id()));
         let xml = r#"<?xml version="1.0"?>
-<testsuite name="tests\integration\custom-queries\montest.test.js" errors="0" failures="0" skipped="0" timestamp="2026-08-13T11:52:52" time="5.768" tests="1">
+<testsuite name="tests\integration\custom-queries\mon_test.test.js" errors="0" failures="0" skipped="0" timestamp="2026-08-13T11:52:52" time="5.768" tests="1">
   <testcase name="does the thing" time="1.2"/>
 </testsuite>"#;
         let cases = write_and_parse(&tmp, "b.xml", xml);
         assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].suite, "montest.test.js");
+        assert_eq!(cases[0].suite, "mon_test.test.js");
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -198,11 +230,11 @@ mod tests {
     fn file_path_style_name_unix_separators() {
         let tmp = std::env::temp_dir().join(format!("nu_plugin_junit_xml_test_{}_c", std::process::id()));
         let xml = r#"<?xml version="1.0"?>
-<testsuite name="tests/integration/custom-queries/montest.test.js" tests="1">
+<testsuite name="tests/integration/custom-queries/mon_test.test.js" tests="1">
   <testcase name="does the thing" time="1.2"/>
 </testsuite>"#;
         let cases = write_and_parse(&tmp, "c.xml", xml);
-        assert_eq!(cases[0].suite, "montest.test.js");
+        assert_eq!(cases[0].suite, "mon_test.test.js");
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -210,13 +242,13 @@ mod tests {
     fn file_path_style_all_cases_in_suite_share_same_label() {
         let tmp = std::env::temp_dir().join(format!("nu_plugin_junit_xml_test_{}_d", std::process::id()));
         let xml = r#"<?xml version="1.0"?>
-<testsuite name="tests/unit/montest.test.js" tests="2">
+<testsuite name="tests/unit/mon_test.test.js" tests="2">
   <testcase name="one" time="0.1"/>
   <testcase name="two" time="0.2"/>
 </testsuite>"#;
         let cases = write_and_parse(&tmp, "d.xml", xml);
         assert_eq!(cases.len(), 2);
-        assert!(cases.iter().all(|c| c.suite == "montest.test.js"));
+        assert!(cases.iter().all(|c| c.suite == "mon_test.test.js"));
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -227,10 +259,10 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("nu_plugin_junit_xml_test_{}_e", std::process::id()));
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <testsuites name="Integration tests" tests="78" failures="0" errors="0" time="39.358">
-  <testsuite name="tests\integration\custom-queries\montest.test.js" errors="0" failures="0" skipped="0" timestamp="2026-08-13T11:52:52" time="5.768" tests="2">
-    <testcase classname="tests\integration\custom-queries\montest.test.js &gt; Procédure proc_WhereAmIInstalled" name="Test pour neo4jback" time="0.394" file="tests\integration\custom-queries\montest.test.js">
+  <testsuite name="tests\integration\custom-queries\mon_test.test.js" errors="0" failures="0" skipped="0" timestamp="2026-08-13T11:52:52" time="5.768" tests="2">
+    <testcase classname="tests\integration\custom-queries\mon_test.test.js &gt; Procédure proc_WhereAmIInstalled" name="Test pour component1" time="0.394" file="tests\integration\custom-queries\mon_test.test.js">
     </testcase>
-    <testcase classname="tests\integration\custom-queries\montest.test.js &gt; Procédure proc_WhereAmIInstalled" name="Test pour connexionmiddle" time="0.307" file="tests\integration\custom-queries\montest.test.js">
+    <testcase classname="tests\integration\custom-queries\mon_test.test.js &gt; Procédure proc_WhereAmIInstalled" name="Test pour component2" time="0.307" file="tests\integration\custom-queries\mon_test.test.js">
       <failure message="boom">stack</failure>
     </testcase>
   </testsuite>
@@ -248,9 +280,9 @@ mod tests {
             "le nom du <testsuites> englobant ne doit jamais être utilisé comme suite"
         );
 
-        let montest_cases: Vec<_> = cases.iter().filter(|c| c.name.contains("neo4jback") || c.name.contains("connexionmiddle")).collect();
-        assert_eq!(montest_cases.len(), 2);
-        assert!(montest_cases.iter().all(|c| c.suite == "montest.test.js"));
+        let mon_test_cases: Vec<_> = cases.iter().filter(|c| c.name.contains("component1") || c.name.contains("component2")).collect();
+        assert_eq!(mon_test_cases.len(), 2);
+        assert!(mon_test_cases.iter().all(|c| c.suite == "mon_test.test.js"));
 
         let other_case = cases.iter().find(|c| c.name == "Un autre test").unwrap();
         assert_eq!(other_case.suite, "other.test.js");
@@ -288,9 +320,75 @@ mod tests {
 
     #[test]
     fn derive_suite_edge_cases() {
-        assert_eq!(derive_suite("tests/integration/noext"), "noext");
-        assert_eq!(derive_suite("tests/.hidden"), ".hidden");
-        assert_eq!(derive_suite("org.outil.SomeTest"), "SomeTest");
-        assert_eq!(derive_suite("SomeTest"), "SomeTest");
+        // Chemin de fichier : classname ignoré, jamais consulté.
+        assert_eq!(derive_suite("tests/integration/noext", None), "noext");
+        assert_eq!(derive_suite("tests/.hidden", None), ".hidden");
+
+        // Style Java classique, avec ou sans classname fourni.
+        assert_eq!(derive_suite("org.outil.SomeTest", None), "SomeTest");
+        assert_eq!(derive_suite("SomeTest", None), "SomeTest");
+        assert_eq!(
+            derive_suite("org.outil.SomeTest", Some("org.outil.SomeTest")),
+            "SomeTest",
+            "classname identique au FQCN : pas de préfixe assaini qui matche, comportement Java inchangé"
+        );
+
+        // Style Karma/Jasmine : classname = préfixe navigateur assaini + '.' + describe.
+        assert_eq!(
+            derive_suite(
+                "Chrome Headless 152.0.0.0 (Windows 10)",
+                Some("Chrome_Headless_152_0_0_0_(Windows_10).CollapsibleCardWrapperComponent (field customizer)")
+            ),
+            "CollapsibleCardWrapperComponent (field customizer)"
+        );
+
+        // Describe contenant lui-même un point : ne doit pas perturber la
+        // détection (seul le TOUT PREMIER point compte, celui qui suit le
+        // préfixe assaini, jamais un point plus loin dans le describe).
+        assert_eq!(
+            derive_suite(
+                "Chrome Headless 152.0.0.0 (Windows 10)",
+                Some("Chrome_Headless_152_0_0_0_(Windows_10).MyService.doSomething()")
+            ),
+            "MyService.doSomething()"
+        );
+
+        // Pas de classname du tout : repli sur le comportement Java (dernier
+        // segment) — mieux que rien, même si "0 (Windows 10)" serait moins
+        // pertinent qu'un vrai describe.
+        assert_eq!(
+            derive_suite("Chrome Headless 152.0.0.0 (Windows 10)", None),
+            "0 (Windows 10)"
+        );
+    }
+
+    #[test]
+    fn karma_report_different_testcases_get_different_suites() {
+        // Extrait représentatif du fichier réel signalé : UN SEUL
+        // <testsuite> par navigateur, mais chaque <testcase> appartient à un
+        // describe différent — la suite doit donc être calculée par test,
+        // pas une fois pour tout le testsuite.
+        let tmp = std::env::temp_dir().join(format!("nu_plugin_junit_xml_test_{}_g", std::process::id()));
+        let xml = r##"<?xml version="1.0"?>
+<testsuite name="Chrome Headless 152.0.0.0 (Windows 10)" package="" timestamp="2026-09-07T07:16:07" id="0" hostname="f4925755" tests="3" errors="0" failures="0" time="0.397">
+  <properties>
+    <property name="browser.fullName" value="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"/>
+  </properties>
+  <testcase name="CollapsibleCardWrapperComponent (field customizer) should add the wrapper" time="0.003" classname="Chrome_Headless_152_0_0_0_(Windows_10).CollapsibleCardWrapperComponent (field customizer)"/>
+  <testcase name="TypologyTableItemComponent should create" time="0.002" classname="Chrome_Headless_152_0_0_0_(Windows_10).TypologyTableItemComponent"/>
+  <testcase name="TypologyTableItemComponent should display the typology title" time="0.002" classname="Chrome_Headless_152_0_0_0_(Windows_10).TypologyTableItemComponent"/>
+</testsuite>"##;
+        let cases = write_and_parse(&tmp, "g.xml", xml);
+
+        assert_eq!(cases.len(), 3);
+        assert!(
+            cases.iter().all(|c| c.suite != "0 (Windows 10)"),
+            "aucune suite ne doit retomber sur le nom de navigateur mal découpé"
+        );
+        assert_eq!(cases[0].suite, "CollapsibleCardWrapperComponent (field customizer)");
+        assert_eq!(cases[1].suite, "TypologyTableItemComponent");
+        assert_eq!(cases[2].suite, "TypologyTableItemComponent");
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

@@ -15,7 +15,7 @@ use nu_plugin::{
     SimplePluginCommand,
 };
 use nu_protocol::{Category, LabeledError, Record, Signature, Span, SyntaxShape, Type, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use xlsx_report::{write_report, ReportMeta};
 
 struct JunitPlugin;
@@ -37,6 +37,33 @@ fn resolve_path(engine: &EngineInterface, raw: &str, span: Span) -> Result<PathB
             .with_label("erreur interne", span)
     })?;
     Ok(PathBuf::from(cwd).join(p))
+}
+
+/// Ouvre un fichier avec l'application associée par défaut de l'OS
+/// (Excel/LibreOffice pour un .xlsx, selon ce qui est installé). `.spawn()`
+/// est utilisé volontairement (pas `.status()`/`.output()`) : on lance
+/// l'application et on rend la main immédiatement, sans attendre sa
+/// fermeture. Pas de dépendance externe — trois commandes système bien
+/// établies, une par OS.
+fn open_in_default_app(path: &Path) -> std::io::Result<()> {
+    if cfg!(target_os = "windows") {
+        // Passe par `cmd /C start` (pas d'exécutable "start" autonome sous
+        // Windows, c'est une commande interne de cmd.exe). Le `""` est un
+        // titre de fenêtre vide obligatoire : sans lui, `start` interprète le
+        // premier argument entre guillemets comme titre plutôt que comme
+        // chemin dès qu'il y a un argument après.
+        std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("start")
+            .arg("")
+            .arg(path)
+            .spawn()?;
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(path).spawn()?;
+    } else {
+        std::process::Command::new("xdg-open").arg(path).spawn()?;
+    }
+    Ok(())
 }
 
 impl Plugin for JunitPlugin {
@@ -156,6 +183,11 @@ impl SimplePluginCommand for JunitToXlsx {
                 "Branche git (affichée en pied de page)",
                 None,
             )
+            .switch(
+                "open",
+                "Ouvre le fichier généré avec l'application par défaut (Excel, LibreOffice...)",
+                Some('o'),
+            )
             .input_output_type(Type::table(), Type::String)
             .category(Category::Formats)
     }
@@ -172,6 +204,7 @@ impl SimplePluginCommand for JunitToXlsx {
         let out_path = resolve_path(engine, &raw_path, span)?;
         let project_name: Option<String> = call.get_flag("project")?;
         let branch: Option<String> = call.get_flag("branch")?;
+        let open_after = call.has_flag("open")?;
 
         let cases = value_to_cases(input, span)?;
 
@@ -194,8 +227,21 @@ impl SimplePluginCommand for JunitToXlsx {
                 .with_label("erreur d'écriture", span)
         })?;
 
+        // L'ouverture est opt-in et non bloquante : un échec ici (pas
+        // d'appli associée, environnement headless/CI...) ne doit pas faire
+        // échouer la commande — le fichier a bien été généré, c'est le plus
+        // important. On le signale juste dans le message retourné.
+        let open_note = if open_after {
+            match open_in_default_app(&out_path) {
+                Ok(()) => String::new(),
+                Err(e) => format!(" (ouverture automatique échouée : {e})"),
+            }
+        } else {
+            String::new()
+        };
+
         Ok(Value::string(
-            format!("Rapport écrit : {}", out_path.display()),
+            format!("Rapport écrit : {}{}", out_path.display(), open_note),
             span,
         ))
     }
