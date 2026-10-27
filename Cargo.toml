@@ -1,6 +1,6 @@
 [package]
 name = "nu_plugin_junit"
-version = "0.3.0"
+version = "0.116.1"
 edition = "2021"
 description = "Plugin nushell natif : parse des rapports JUnit/surefire et génère un rapport Excel stylé"
 license = "MIT"
@@ -9,11 +9,11 @@ license = "MIT"
 # default-features = false désactive la feature "local-socket" (dépend
 # d'`interprocess`) : le plugin communique en stdio classique, ce qui suffit
 # largement ici et évite un conflit de versions transitif avec interprocess.
-nu-plugin = { version = "0.114.1", default-features = false }
-nu-protocol = "0.114.1"
-roxmltree = "0.21.1"
-rust_xlsxwriter = "0.97.1"
+nu-plugin = { version = "0.116.1", default-features = false }
+nu-protocol = "0.116.1"
+roxmltree = "0.21.2"
+rust_xlsxwriter = "0.101.0"
 
 [dev-dependencies]
-nu-plugin-test-support = "0.114.1"
+nu-plugin-test-support = "0.116.1"
 
